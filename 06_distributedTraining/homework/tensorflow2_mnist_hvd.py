@@ -14,19 +14,34 @@
 # ==============================================================================
 
 import tensorflow as tf
+from tensorflow.python.profiler import trace
 import argparse
 import numpy as np
+import sys, os
+import time,math
+
+# This control parallelism in Tensorflow
+parallel_threads = 128
+# This controls how many batches to prefetch
+prefetch_buffer_size = 8 # tf.data.AUTOTUNE
+
+
+# how many training steps to take during profiling
+num_steps = args.num_steps
+use_profiler = True
 
 # step 1: Initialization
 # HVD-1 - initialize Horovd
 import horovod.tensorflow as hvd
 hvd.init()
 print("# I am rank %d of %d" %(hvd.rank(), hvd.size()))
+# to ensure that thread no is not exceeding the total available threads
 parallel_threads = parallel_threads//hvd.size()
 os.environ['OMP_NUM_THREADS'] = str(parallel_threads)
 num_parallel_readers = parallel_threads
 #num_parallel_readers = tf.data.AUTOTUNE
 
+# step 2: Assign GPU to work process
 # HVD-2 - Assign GPUs to each rank
 gpus = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
@@ -69,10 +84,15 @@ dataset = tf.data.Dataset.from_tensor_slices(
     (tf.cast(mnist_images[..., tf.newaxis] / 255.0, tf.float32),
              tf.cast(mnist_labels, tf.int64))
 )
+
 test_dset = tf.data.Dataset.from_tensor_slices(
     (tf.cast(x_test[..., tf.newaxis] / 255.0, tf.float32),
              tf.cast(y_test, tf.int64))
 )
+# step 3: Loading data according to rank ID and ajusting the number of time steps
+dataset = dataset.shard(num_shards=hvd.size(), index=hvd.rank())
+test_dset = test_dset.shard(num_shards=hvd.size(), index=hvd.rank())
+
 
 nsamples = len(list(dataset))
 ntests = len(list(test_dset))
@@ -96,7 +116,9 @@ mnist_model = tf.keras.Sequential([
 ])
 loss = tf.losses.SparseCategoricalCrossentropy()
 
-opt = tf.optimizers.Adam(args.lr)
+# step 4: Scale the learning rate with number of workers
+opt = tf.train.AdagradOptimizer(lr*hvd.size())
+
 
 checkpoint_dir = './checkpoints/tf2_mnist'
 checkpoint = tf.train.Checkpoint(model=mnist_model, optimizer=opt)
@@ -112,7 +134,9 @@ def training_step(images, labels):
         pred = tf.math.argmax(probs, axis=1)
         equality = tf.math.equal(pred, labels)
         accuracy = tf.math.reduce_mean(tf.cast(equality, tf.float32))
-
+    
+    # step 5: Wrap tf.GradientTape with Horovod Distributed Gradient Tape
+    tape = hvd.DistributedGradientTape(tape)
     grads = tape.gradient(loss_value, mnist_model.trainable_variables)
     opt.apply_gradients(zip(grads, mnist_model.trainable_variables))
     return loss_value, accuracy
@@ -142,11 +166,45 @@ for ep in range(args.epochs):
     tt0 = time.time()
     for batch, (images, labels) in enumerate(dataset.take(nstep)):
         loss_value, acc = training_step(images, labels)
-        training_loss += loss_value/nstep
-        training_acc += acc/nstep
+        #training_loss += loss_value/nstep
+        #training_acc += acc/nstep
+        loss_value = hvd.allreduce(loss_value, average=True)
+        acc = hvd.allreduce(acc, average=True)
+        if (step_in_epoch==0 and epoch == 0):
+            hvd.broadcast_variables(mnist_model.variables, root_rank=0)
+            hvd.broadcast_variables(opt.variables(), root_rank=0)
         if batch % 100 == 0: 
             checkpoint.save(checkpoint_dir)
             print('Epoch - %d, step #%06d/%06d\tLoss: %.6f' % (ep, batch, nstep, loss_value))
+        end = time.time()
+        images_per_second = BATCH_SIZE / (end - start)
+        if i > 0: # skip the first measurement because it includes compile time
+            sum += images_per_second
+            sum2 += images_per_second * images_per_second
+
+        if (hvd.rank()==0):
+            print(f"Finished step {step_in_epoch.numpy()} of {steps_per_epoch} in epoch {i_epoch.numpy()},loss={loss:.3f}, acc={acc:.3f} ({images_per_second*hvd.size():.3f} img/s).")
+        start = time.time()
+        # added for profiling to stop after some steps
+        i += 1
+        if i >= num_steps: 
+            break
+
+    # added for profiling to stop after some steps
+    if use_profiler:
+        if (hvd.rank()==0):
+            print('stop profiler')
+        i = i - 1
+        mean_rate = sum / i
+        stddev_rate = math.sqrt( sum2/i - mean_rate * mean_rate )
+        if (hvd.rank()==0):
+            print(f'mean image/s = {mean_rate*hvd.size():8.2f}   standard deviation: {stddev_rate*hvd.size():8.2f}')
+        tf.profiler.experimental.stop()
+        sys.exit(0)
+
+    # Save the network after every epoch:
+    if (hvd.rank()==0):
+        checkpoint.save("mnist/model")
     # Testing
     test_acc = 0.0
     test_loss = 0.0

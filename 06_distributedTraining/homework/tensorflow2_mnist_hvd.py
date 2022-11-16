@@ -17,6 +17,21 @@ import tensorflow as tf
 import argparse
 import numpy as np
 
+# step 1: Initialization
+# HVD-1 - initialize Horovd
+import horovod.tensorflow as hvd
+hvd.init()
+print("# I am rank %d of %d" %(hvd.rank(), hvd.size()))
+parallel_threads = parallel_threads//hvd.size()
+os.environ['OMP_NUM_THREADS'] = str(parallel_threads)
+num_parallel_readers = parallel_threads
+#num_parallel_readers = tf.data.AUTOTUNE
+
+# HVD-2 - Assign GPUs to each rank
+gpus = tf.config.experimental.list_physical_devices('GPU')
+tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
+
+
 import time
 t0 = time.time()
 parser = argparse.ArgumentParser(description='TensorFlow MNIST Example')

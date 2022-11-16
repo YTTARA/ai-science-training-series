@@ -28,7 +28,6 @@ prefetch_buffer_size = 8 # tf.data.AUTOTUNE
 
 # how many training steps to take during profiling
 num_steps = args.num_steps
-use_profiler = True
 
 # step 1: Initialization
 # HVD-1 - initialize Horovd
@@ -60,15 +59,11 @@ parser.add_argument('--num_steps', default=1000000, type=int, help="Number of st
 args = parser.parse_args()
 
 
-if args.device == 'cpu':
-    tf.config.threading.set_intra_op_parallelism_threads(args.num_intra)
-    tf.config.threading.set_inter_op_parallelism_threads(args.num_inter)
-else:
-    # step 2: Assign GPU to work process
-    # HVD-2 - Assign GPUs to each rank
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    for gpu in gpus:
-        tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
+# step 2: Assign GPU to work process
+# HVD-2 - Assign GPUs to each rank
+gpus = tf.config.experimental.list_physical_devices('GPU')
+for gpu in gpus:
+  tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
 
 
 #---------------------------------------------------

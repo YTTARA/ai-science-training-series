@@ -41,25 +41,21 @@ os.environ['OMP_NUM_THREADS'] = str(parallel_threads)
 num_parallel_readers = parallel_threads
 #num_parallel_readers = tf.data.AUTOTUNE
 
-# step 2: Assign GPU to work process
-# HVD-2 - Assign GPUs to each rank
-gpus = tf.config.experimental.list_physical_devices('GPU')
-tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
-
-
 import time
 t0 = time.time()
 parser = argparse.ArgumentParser(description='TensorFlow MNIST Example')
-parser.add_argument('--batch_size', type=int, default=256, metavar='N',
-                    help='input batch size for training (default: 256)')
+#parser.add_argument('--batch_size', type=int, default=256, metavar='N',
+#                    help='input batch size for training (default: 256)')
 parser.add_argument('--epochs', type=int, default=16, metavar='N',
                     help='number of epochs to train (default: 16)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.01)')
 parser.add_argument('--device', default='gpu',
                     help='Wheter this is running on cpu or gpu')
-parser.add_argument('--num_inter', default=2, help='set number inter', type=int)
-parser.add_argument('--num_intra', default=0, help='set number intra', type=int)
+parser.add_argument('--num_steps', default=1000000, type=int, help="Number of steps")
+
+#parser.add_argument('--num_inter', default=2, help='set number inter', type=int)
+#parser.add_argument('--num_intra', default=0, help='set number intra', type=int)
 
 args = parser.parse_args()
 
@@ -68,10 +64,11 @@ if args.device == 'cpu':
     tf.config.threading.set_intra_op_parallelism_threads(args.num_intra)
     tf.config.threading.set_inter_op_parallelism_threads(args.num_inter)
 else:
+    # step 2: Assign GPU to work process
+    # HVD-2 - Assign GPUs to each rank
     gpus = tf.config.experimental.list_physical_devices('GPU')
     for gpu in gpus:
-        tf.config.experimental.set_memory_growth(gpu, True)
-
+        tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
 
 
 #---------------------------------------------------
@@ -189,18 +186,6 @@ for ep in range(args.epochs):
         i += 1
         if i >= num_steps: 
             break
-
-    # added for profiling to stop after some steps
-    if use_profiler:
-        if (hvd.rank()==0):
-            print('stop profiler')
-        i = i - 1
-        mean_rate = sum / i
-        stddev_rate = math.sqrt( sum2/i - mean_rate * mean_rate )
-        if (hvd.rank()==0):
-            print(f'mean image/s = {mean_rate*hvd.size():8.2f}   standard deviation: {stddev_rate*hvd.size():8.2f}')
-        tf.profiler.experimental.stop()
-        sys.exit(0)
 
     # Save the network after every epoch:
     if (hvd.rank()==0):

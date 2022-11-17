@@ -204,7 +204,7 @@ for ep in range(args.epochs):
         # HVD-8 average the metrics
         mean_accuracy = hvd.allreduce(test_acc, average=True)
     if (hvd.rank()==0):
-        print(f"Validation accuracy after epoch {ntest_step}: {mean_accuracy:.4f}.")
+        print(f"Validation accuracy after epoch {ep}: {mean_accuracy:.4f}.")
     tt1 = time.time()
     print('E[%d], train Loss: %.6f, training Acc: %.3f, val loss: %.3f, val Acc: %.3f\t Time: %.3f seconds' % (ep, training_loss, training_acc, test_loss, test_acc, tt1 - tt0))
     metrics['train_acc'].append(training_acc)
